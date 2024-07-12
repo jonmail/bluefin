@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.1.0](https://github.com/ublue-os/bluefin/compare/v3.0.0...v3.1.0) (2024-07-12)
+
+
+### Features
+
+* **dx:** add monaspace font ([#1475](https://github.com/ublue-os/bluefin/issues/1475)) ([de9e5e3](https://github.com/ublue-os/bluefin/commit/de9e5e3faa10a42ae56052ff6fb230161cf49d24))
+* ujust command to toggle Tailscale ([#1477](https://github.com/ublue-os/bluefin/issues/1477)) ([9f914cf](https://github.com/ublue-os/bluefin/commit/9f914cfd28036e2cc45031c9f270a991a3b0db82))
+
+
+### Bug Fixes
+
+* update gnome-vrr copr ([#1492](https://github.com/ublue-os/bluefin/issues/1492)) ([94a38ed](https://github.com/ublue-os/bluefin/commit/94a38ed060fd4776447c8b7aa193eb7fca167cf9))
+
 ## [3.0.0](https://github.com/ublue-os/bluefin/compare/v2.10.0...v3.0.0) (2024-07-01)
 
 
