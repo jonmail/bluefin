@@ -78,6 +78,7 @@
 			"dx": [
 				"adobe-source-code-pro-fonts",
 				"android-tools",
+				"bpftop",
 				"cascadia-code-fonts",
 				"cockpit-machines",
 				"cockpit-networkmanager",
@@ -169,15 +170,15 @@
 		},
 		"exclude": {
 			"all": [],
-			"silverblue": [
-				
-			],
+			"silverblue": [],
 			"dx": []
 		}
 	},
 	"40": {
 		"include": {
-			"all": [],
+			"all": [
+				"ptyxis"
+			],
 			"silverblue": [],
 			"dx": []
 		},
