@@ -2,6 +2,10 @@
 {
 	"name": "Bluefin-devcontainer",
 	"image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+	"workspaceFolder": "${localWorkspaceFolder}",
+	"workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+	"mounts": [{ "source": "/tmp", "target": "/tmp", "type": "bind" }],
+	"otherPortsAttributes": { "onAutoForward" : "ignore" },
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -16,7 +20,6 @@
 	},
 	// Likely need to add "--userns=keep-id, --group-add=keep-groups" for podman support 
 	"runArgs": ["--init"],
-	"remoteEnv": { "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}" },
 	"securityOpt": [
 		"label=disable"
 	],
