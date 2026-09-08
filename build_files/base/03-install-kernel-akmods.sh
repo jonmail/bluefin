@@ -36,16 +36,6 @@ dnf5 versionlock add kernel kernel-devel kernel-devel-matched kernel-core kernel
 # Everyone
 # NOTE: we won't use dnf5 copr plugin for ublue-os/akmods until our upstream provides the COPR standard naming
 sed -i 's@enabled=0@enabled=1@g' /etc/yum.repos.d/_copr_ublue-os-akmods.repo
-if [[ "${UBLUE_IMAGE_TAG}" == "beta" ]]; then
-    dnf5 -y install /tmp/akmods/kmods/*xone*.rpm || true
-    dnf5 -y install /tmp/akmods/kmods/*openrazer*.rpm || true
-    dnf5 -y install /tmp/akmods/kmods/*framework-laptop*.rpm || true
-else
-    dnf5 -y install \
-        /tmp/akmods/kmods/*xone*.rpm \
-        /tmp/akmods/kmods/*openrazer*.rpm \
-        /tmp/akmods/kmods/*framework-laptop*.rpm
-fi
 
 # RPMFUSION Dependent AKMODS
 if [[ "${UBLUE_IMAGE_TAG}" == "beta" ]]; then
@@ -53,35 +43,23 @@ if [[ "${UBLUE_IMAGE_TAG}" == "beta" ]]; then
         https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-"$(rpm -E %fedora)".noarch.rpm || true
     dnf5 -y install \
         https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-"$(rpm -E %fedora)".noarch.rpm || true
+    dnf5 -y install \
+        v4l2loopback /tmp/akmods/kmods/*v4l2loopback*.rpm || true
+    dnf5 -y remove rpmfusion-free-release || true
+    dnf5 -y remove rpmfusion-nonfree-release || true
 else
     dnf5 -y install \
         https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-"$(rpm -E %fedora)".noarch.rpm \
         https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-"$(rpm -E %fedora)".noarch.rpm
-fi
-
-if [[ "${UBLUE_IMAGE_TAG}" == "beta" ]]; then
-    dnf5 -y install \
-        v4l2loopback /tmp/akmods/kmods/*v4l2loopback*.rpm || true
-else
     dnf5 -y install \
         v4l2loopback /tmp/akmods/kmods/*v4l2loopback*.rpm
-fi
-
-if [[ "${UBLUE_IMAGE_TAG}" == "beta" ]]; then
-    dnf5 -y remove rpmfusion-free-release || true
-    dnf5 -y remove rpmfusion-nonfree-release || true
-else
     dnf5 -y remove rpmfusion-free-release rpmfusion-nonfree-release
 fi
 
 # Nvidia AKMODS
 if [[ "${IMAGE_NAME}" =~ nvidia ]]; then
     # Fetch Nvidia RPMs
-    if [[ "${IMAGE_NAME}" =~ open ]]; then
-        skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-nvidia-open:"${AKMODS_FLAVOR}"-"$(rpm -E %fedora)"-"${KERNEL}" dir:/tmp/akmods-rpms
-    else
-        skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-nvidia:"${AKMODS_FLAVOR}"-"$(rpm -E %fedora)"-"${KERNEL}" dir:/tmp/akmods-rpms
-    fi
+    skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-nvidia-open:"${AKMODS_FLAVOR}"-"$(rpm -E %fedora)"-"${KERNEL}" dir:/tmp/akmods-rpms
     NVIDIA_TARGZ=$(jq -r '.layers[].digest' </tmp/akmods-rpms/manifest.json | cut -d : -f 2)
     tar -xvzf /tmp/akmods-rpms/"$NVIDIA_TARGZ" -C /tmp/
     mv /tmp/rpms/* /tmp/akmods-rpms/
@@ -99,9 +77,7 @@ if [[ "${IMAGE_NAME}" =~ nvidia ]]; then
     fi
 
     # Install Nvidia RPMs
-    curl -Lo /tmp/nvidia-install.sh https://raw.githubusercontent.com/ublue-os/main/main/build_files/nvidia-install.sh
-    chmod +x /tmp/nvidia-install.sh
-    IMAGE_NAME="${BASE_IMAGE_NAME}" RPMFUSION_MIRROR="" /tmp/nvidia-install.sh
+    IMAGE_NAME="${BASE_IMAGE_NAME}" AKMODNV_PATH="/tmp/akmods-rpms" MULTILIB=0 /tmp/akmods-rpms/ublue-os/nvidia-install.sh
     rm -f /usr/share/vulkan/icd.d/nouveau_icd.*.json
     ln -sf libnvidia-ml.so.1 /usr/lib64/libnvidia-ml.so
     tee /usr/lib/bootc/kargs.d/00-nvidia.toml <<EOF
@@ -109,7 +85,7 @@ kargs = ["rd.driver.blacklist=nouveau", "modprobe.blacklist=nouveau", "nvidia-dr
 EOF
 fi
 
-# ZFS for gts/stable
+# ZFS for stable
 if [[ ${AKMODS_FLAVOR} =~ coreos ]]; then
     # Fetch ZFS RPMs
     skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-zfs:"${AKMODS_FLAVOR}"-"$(rpm -E %fedora)"-"${KERNEL}" dir:/tmp/akmods-zfs
@@ -120,10 +96,10 @@ if [[ ${AKMODS_FLAVOR} =~ coreos ]]; then
     # Declare ZFS RPMs
     ZFS_RPMS=(
         /tmp/akmods-zfs/kmods/zfs/kmod-zfs-"${KERNEL}"-*.rpm
-        /tmp/akmods-zfs/kmods/zfs/libnvpair3-*.rpm
-        /tmp/akmods-zfs/kmods/zfs/libuutil3-*.rpm
-        /tmp/akmods-zfs/kmods/zfs/libzfs6-*.rpm
-        /tmp/akmods-zfs/kmods/zfs/libzpool6-*.rpm
+        /tmp/akmods-zfs/kmods/zfs/libnvpair[0-9]-*.rpm
+        /tmp/akmods-zfs/kmods/zfs/libuutil[0-9]-*.rpm
+        /tmp/akmods-zfs/kmods/zfs/libzfs[0-9]-*.rpm
+        /tmp/akmods-zfs/kmods/zfs/libzpool[0-9]-*.rpm
         /tmp/akmods-zfs/kmods/zfs/python3-pyzfs-*.rpm
         /tmp/akmods-zfs/kmods/zfs/zfs-*.rpm
         pv

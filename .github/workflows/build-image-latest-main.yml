@@ -6,13 +6,19 @@ on:
       - main
       - testing
     paths-ignore:
-      - '**.md'
-      - 'iso_files/**'
-      - 'bluefin_flatpaks/**'
-      - 'dx_flatpaks/**'
-      - '.github/workflows/*iso*'
+      - ".github/workflows/*validate*.yml"
+      - "**.md"
+      - "flatpaks/**"
+      - "system_files/shared/etc/bazaar/**"
   workflow_call:
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   build-image-latest:
@@ -24,13 +30,15 @@ jobs:
       matrix:
         brand_name: ["bluefin"]
     with:
-      image_flavors: '["main", "nvidia", "nvidia-open"]'
+      image_flavors: '["main", "nvidia-open"]'
       brand_name: ${{ matrix.brand_name }}
       stream_name: latest
 
   generate-release:
     name: Generate Release
     needs: [build-image-latest]
+    permissions:
+      contents: write
     secrets: inherit
     uses: ./.github/workflows/generate-release.yml
     with:

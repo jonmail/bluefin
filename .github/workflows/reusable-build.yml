@@ -3,8 +3,8 @@ on:
   workflow_call:
     inputs:
       image_flavors:
-        description: "JSON string of flavors to build, '[main, nvidia, hwe, hwe-nvidia]'"
-        default: "['main', 'nvidia', 'nvidia-open']"
+        description: "JSON string of flavors to build, '[main, nvidia]'"
+        default: "['main', 'nvidia-open']"
         type: string
       brand_name:
         description: "The Brand Name: bluefin"
@@ -12,7 +12,7 @@ on:
         default: bluefin
         type: string
       stream_name:
-        description: "The Fedora Version: gts, stable, or latest"
+        description: "The Fedora Version: stable, latest, or beta"
         required: true
         type: string
       kernel_pin:
@@ -26,10 +26,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   build_container:
     name: image
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     continue-on-error: false
     strategy:
       fail-fast: false
@@ -40,15 +48,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
 
       - name: Maximize build space
-        uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e # v9
-        with:
-          remove-codeql: true
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6 # v10
 
-      - name: Setup Just
-        uses: extractions/setup-just@e33e0265a09d6d736e2ee1e0eb685ef1de4669ff # v3
+      - name: Install Just
+        run: |
+          /home/linuxbrew/.linuxbrew/bin/brew install just
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
 
       - name: Check Just Syntax
         shell: bash
@@ -70,43 +80,89 @@ jobs:
           echo "Default Tag: ${DEFAULT_TAG}"
           echo "DEFAULT_TAG=${DEFAULT_TAG}" >> $GITHUB_ENV
 
+      - name: DNF Package Cache Setup
+        shell: bash
+        id: setup-cache
+        env:
+          MATRIX_BASE_NAME: ${{ matrix.base_name }}
+          MATRIX_STREAM_NAME: ${{ matrix.stream_name }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          CACHE="$(just setup-cache "${MATRIX_BASE_NAME}" \
+                            "${MATRIX_STREAM_NAME}" \
+                            "1" \
+                            "${GITHUB_EVENT_NAME}")"
+
+          CACHE_NAME="$(echo "${CACHE}" | cut -d' ' -f 1)"
+          ALLOW_CACHE_WRITE="$(echo "${CACHE}" | cut -d' ' -f 2)"
+
+          echo "cache_name=${CACHE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "allow_cache_write=${ALLOW_CACHE_WRITE}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore DNF package cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          CACHE_NAME: ${{ steps.setup-cache.outputs.cache_name }}
+        with:
+          path: /var/tmp/buildah-cache-*
+          key: ${{ runner.os }}-${{ runner.arch }}-buildah-${{ env.CACHE_NAME }}
+
       - name: Build Image
         id: build-image
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo $(command -v just) repo_organization="${{ github.repository_owner }}" \
+          sudo -E $(command -v just) repo_organization="${{ github.repository_owner }}" \
                     build-ghcr "${{ matrix.base_name }}" \
                                "${{ matrix.stream_name }}" \
                                "${{ matrix.image_flavor }}" \
                                "${{ inputs.kernel_pin }}"
 
+      # https://github.com/actions/cache/issues/1533
+      - name: Hack around permission issue caching
+        shell: bash
+        id: cache-perms
+        run: |
+          sudo chmod 777 --recursive /var/tmp/buildah-cache-0
+
+      - name: Write new DNF package cache
+        if: steps.setup-cache.outputs.allow_cache_write == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          CACHE_NAME: ${{ steps.setup-cache.outputs.cache_name }}
+        with:
+          path: /var/tmp/buildah-cache-*
+          key: ${{ runner.os }}-${{ runner.arch }}-buildah-${{ env.CACHE_NAME }}
+
       - name: Setup Syft
         id: setup-syft
-        if: false
-        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          syft-version: v1.20.0
+          syft-version: v1.39.0
 
       - name: Generate SBOM
-        if: false
+        if: github.event_name != 'pull_request'
         id: generate-sbom
         env:
-          IMAGE: ${{ env.IMAGE_NAME }}
-          STREAM_NAME: ${{ matrix.stream_name }}
+          MATRIX_BASE_NAME: ${{ matrix.base_name }}
+          MATRIX_STREAM_NAME: ${{ matrix.stream_name }}
+          MATRIX_IMAGE_FLAVOR: ${{ matrix.image_flavor }}
           SYFT_CMD: ${{ steps.setup-syft.outputs.cmd }}
         run: |
-          sudo systemctl start podman.socket
-
-          OUTPUT_PATH="$(mktemp -d)/sbom.json"
-          export SYFT_PARALLELISM=$(($(nproc)*2))
-          sudo $SYFT_CMD ${IMAGE}:${STREAM_NAME} -o spdx-json=${OUTPUT_PATH}
-          echo "OUTPUT_PATH=${OUTPUT_PATH}" >> $GITHUB_OUTPUT
+          sudo -E $(command -v just) gen-sbom "${MATRIX_BASE_NAME}" \
+                            "${MATRIX_STREAM_NAME}" \
+                            "${MATRIX_IMAGE_FLAVOR}" \
+                            "${SYFT_CMD}"
 
       - name: Rechunk Image
         id: rechunk-image
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo $(command -v just) rechunk "${{ matrix.base_name }}" \
+          sudo -E $(command -v just) rechunk "${{ matrix.base_name }}" \
                             "${{ matrix.stream_name }}" \
                             "${{ matrix.image_flavor }}" \
                             "1"
@@ -115,7 +171,7 @@ jobs:
         id: load-rechunk
         shell: bash
         run: |
-          just load-rechunk "${{ matrix.base_name }}" \
+          sudo -E $(command -v just) load-rechunk "${{ matrix.base_name }}" \
                             "${{ env.DEFAULT_TAG }}" \
                             "${{ matrix.image_flavor }}"
 
@@ -123,7 +179,7 @@ jobs:
         id: secureboot
         shell: bash
         run: |
-          just secureboot "${{ matrix.base_name }}" \
+          sudo -E $(command -v just) secureboot "${{ matrix.base_name }}" \
                           "${{ env.DEFAULT_TAG }}" \
                           "${{ matrix.image_flavor }}"
 
@@ -150,7 +206,7 @@ jobs:
         shell: bash
         run: |
           set -eoux pipefail
-          just tag-images "${{ env.IMAGE_NAME }}" \
+          sudo -E $(command -v just) tag-images "${{ env.IMAGE_NAME }}" \
                           "${{ env.DEFAULT_TAG }}" \
                           "${{ steps.generate-tags.outputs.alias_tags }}"
 
@@ -158,7 +214,7 @@ jobs:
       # https://github.com/macbre/push-to-ghcr/issues/12
       - name: Lowercase Registry
         id: registry_case
-        uses: ASzc/change-string-case-action@d0603cd0a7dd490be678164909f65c7737470a7f # v6
+        uses: ASzc/change-string-case-action@ecd1412d078f2e06e9eedcbaa6fcd988151c3f82 # v8
         with:
           string: ${{ env.IMAGE_REGISTRY }}
 
@@ -171,35 +227,28 @@ jobs:
       - name: Push to GHCR
         id: push
         if: github.event_name != 'pull_request'
-        uses: Wandalen/wretry.action@e68c23e6309f2871ca8ae4763e7629b9c258e1ea # v3.8.0
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
-          attempt_limit: 3
-          attempt_delay: 15000
+          max_attempts: 3
+          retry_wait_seconds: 15
+          timeout_minutes: 30
           command: |
             set -euox pipefail
 
+            digest_file="$PWD/.push-digest"
             for tag in ${{ steps.generate-tags.outputs.alias_tags }}; do
-              podman push ${{ env.IMAGE_NAME }}:${tag} ${{ steps.registry_case.outputs.lowercase }}/${{ env.IMAGE_NAME }}:${tag}
+              dest=${{ steps.registry_case.outputs.lowercase }}/${{ env.IMAGE_NAME }}:${tag}
+              sudo -E podman push --digestfile "${digest_file}" ${{ env.IMAGE_NAME }}:${tag} "${dest}"
+              # We need to push twice to workaround https://github.com/containers/podman/issues/27796
+              # If we don't do this then the digest changes and we are only signing this specific tag
+              sudo -E podman push --digestfile "${digest_file}" ${{ env.IMAGE_NAME }}:${tag} "${dest}"
             done
 
-            if [[ "${{ matrix.image_flavor }}" =~ hwe ]]; then
-
-              image_name="${{ env.IMAGE_NAME }}"
-              asus_name="${image_name/hwe/asus}"
-              surface_name="${image_name/hwe/surface}"
-
-              for tag in ${{ steps.generate-tags.outputs.alias_tags }}; do
-                podman push ${asus_name}:${tag} ${{ steps.registry_case.outputs.lowercase }}/${asus_name}:${tag}
-                podman push ${surface_name}:${tag} ${{ steps.registry_case.outputs.lowercase }}/${surface_name}:${tag}
-              done
-            fi
-
-            digest=$(skopeo inspect docker://${{ steps.registry_case.outputs.lowercase }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }} --format '{{.Digest}}')
-
+            digest="$(cat "${digest_file}")"
             echo "digest=${digest}" >> $GITHUB_OUTPUT
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
         if: github.event_name != 'pull_request'
 
       - name: Sign container image
@@ -207,38 +256,58 @@ jobs:
         run: |
           cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ steps.registry_case.outputs.lowercase }}/${{ env.IMAGE_NAME }}@${TAGS}
         env:
-          TAGS: ${{ steps.push.outputs.outputs && fromJSON(steps.push.outputs.outputs).digest }}
+          TAGS: ${{ steps.push.outputs.digest }}
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
-      - name: Sign container image
-        if: github.event_name != 'pull_request' && contains(matrix.image_flavor, 'hwe')
-        shell: bash
+      - name: Install ORAS
+        if: github.event_name != 'pull_request'
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Login to GitHub Container Registry with ORAS
+        if: github.event_name != 'pull_request'
         run: |
-          image_name="${{ env.IMAGE_NAME }}"
-          asus_name="${image_name/hwe/asus}"
-          surface_name="${image_name/hwe/surface}"
-          cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ steps.registry_case.outputs.lowercase }}/${asus_name}@${TAGS}
-          cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ steps.registry_case.outputs.lowercase }}/${surface_name}@${TAGS}
-        env:
-          TAGS: ${{ steps.push.outputs.outputs && fromJSON(steps.push.outputs.outputs).digest }}
-          COSIGN_EXPERIMENTAL: false
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          echo ${{ secrets.GITHUB_TOKEN }} | oras login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Add SBOM Attestation
-        if: false
+      - name: Upload SBOM
+        if: github.event_name != 'pull_request'
+        id: upload-sbom
         env:
           IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
-          DIGEST: ${{ steps.push.outputs.outputs && fromJSON(steps.push.outputs.outputs).digest }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          SBOM_OUTPUT: ${{ steps.generate-sbom.outputs.OUTPUT_PATH }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
-          cd "$(dirname "$SBOM_OUTPUT")"
-          cosign attest -y \
-            --predicate ./sbom.json \
-            --type spdxjson \
-            --key env://COSIGN_PRIVATE_KEY \
-            "${IMAGE}@${DIGEST}"
+          SBOM="sbom_out/${IMAGE_NAME}/sbom.json"
+
+          cd "$(dirname "${SBOM}")"
+          oras attach \
+            --artifact-type application/vnd.spdx+json \
+            --annotation filename=$(basename "$SBOM") \
+            "${IMAGE}@${DIGEST}" \
+            "$(basename ${SBOM})"
+
+          sbom_digest=$(oras discover --format json "${IMAGE}@${DIGEST}" | jq -r '.referrers[] | select(.artifactType == "application/vnd.spdx+json") | .digest')
+
+          echo "sbom_digest=${sbom_digest}" >> $GITHUB_OUTPUT
+
+      - name: Sign SBOM OCI Artifact
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: false
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          LOWERCASE: ${{ steps.registry_case.outputs.lowercase }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          SBOM_DIGEST: ${{ steps.upload-sbom.outputs.sbom_digest }}
+        run: |
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY ${LOWERCASE}/${IMAGE_NAME}@${SBOM_DIGEST}
+
+      - name: Attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   check:
     name: Check all ${{ matrix.stream_name }} builds successful
